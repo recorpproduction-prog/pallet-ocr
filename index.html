@@ -3,42 +3,62 @@
   <head>
     <meta charset="utf-8" />
     <title>Pallet OCR Capture</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
 
+    <!-- Tesseract.js OCR -->
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 
     <style>
       * { box-sizing: border-box; }
+
       body {
         background: #0e0e0e;
         color: #ffffff;
         font-family: Arial, sans-serif;
         text-align: center;
-        padding: 20px;
         margin: 0;
+        padding: 20px;
       }
-      video, canvas {
+
+      h2 { margin-bottom: 15px; }
+
+      video {
         width: 100%;
-        max-width: 500px;
-        border-radius: 10px;
+        max-width: 420px;      /* Slightly narrower for portrait */
+        aspect-ratio: 9 / 16;  /* Force tall video shape */
+        object-fit: cover;     /* Fill the portrait shape */
+        border-radius: 12px;
         background: #000;
       }
+
+      canvas {
+        display: none;
+      }
+
       button {
         background: #28a745;
         color: white;
         margin-top: 15px;
-        padding: 12px 24px;
-        font-size: 16px;
-        border-radius: 10px;
+        padding: 14px 26px;
+        font-size: 18px;
+        border-radius: 12px;
         border: none;
         cursor: pointer;
       }
-      #status { margin-top: 15px; min-height: 20px; font-size: 14px; }
+
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+      #status {
+        margin-top: 15px;
+        min-height: 24px;
+        font-size: 16px;
+      }
+
       #rawTextBox {
         margin-top: 15px;
         width: 100%;
-        max-width: 500px;
-        height: 120px;
+        max-width: 480px;
+        height: 140px;
         font-size: 12px;
         font-family: monospace;
         white-space: pre-wrap;
@@ -47,15 +67,15 @@
   </head>
 
   <body>
-    <h2>Pallet OCR Capture</h2>
+    <h2>Pallet OCR Capture (Portrait Mode)</h2>
 
     <video id="video" autoplay playsinline></video>
-    <canvas id="canvas" style="display:none;"></canvas>
+    <canvas id="canvas"></canvas>
 
     <button id="captureBtn">Capture, OCR & Upload</button>
 
     <div id="status"></div>
-    <textarea id="rawTextBox" readonly></textarea>
+    <textarea id="rawTextBox" readonly placeholder="OCR text will appear here..."></textarea>
 
     <script>
       const BACKEND_URL = "YOUR_WEB_APP_URL_HERE";
@@ -67,22 +87,45 @@
       const rawBox = document.getElementById("rawTextBox");
       const statusEl = document.getElementById("status");
 
+      let cameraReady = false;
+
       function setStatus(msg) {
         statusEl.textContent = msg;
       }
 
+      /* ---------------------------------------------------------
+       * START CAMERA — portrait mode forced
+       * --------------------------------------------------------- */
       navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment" },
+        video: {
+          facingMode: "environment",
+          aspectRatio: 9 / 16,
+          width:  { ideal: 720 },
+          height: { ideal: 1280 }
+        },
         audio: false
       })
-      .then(stream => video.srcObject = stream)
+      .then(stream => {
+        video.srcObject = stream;
+        video.addEventListener("loadedmetadata", () => {
+          cameraReady = true;
+          setStatus("Camera ready.");
+        });
+      })
       .catch(err => setStatus("Camera error: " + err.message));
 
+
+      /* ---------------------------------------------------------
+       * OCR FIELD PARSER
+       * --------------------------------------------------------- */
       function parseFields(raw) {
         const t = raw.replace(/\r/g, "").replace(/[ \t]+\n/g, "\n");
-        function pick(regex) {
-          const m = t.match(regex); return m ? m[1].trim() : "";
-        }
+
+        const pick = (regex) => {
+          const m = t.match(regex);
+          return m ? m[1].trim() : "";
+        };
+
         const itemNumber  = pick(/Item\s*Number[:\s]*([^\n]+)/i);
         const description = pick(/Item\s*Description[:\s]*([\s\S]*?)\n(?:Batch|Date|EAN|SSCC|Quantity)/i);
         const batchNo     = pick(/Batch.*?[:\-]?\s*([A-Za-z0-9\-]+)/i);
@@ -90,30 +133,47 @@
         const sscc        = (pick(/SSCC[:\s]*([^\n]+)/i)||"").replace(/[^0-9]/g,"");
         const labelDate   = pick(/Date[:\s]*([0-9\/\-]+)/i);
         const labelTime   = pick(/Time[:\s]*([0-9:]+)/i);
+
         let quantity = pick(/Quantity.*?([\d]+)/i);
-        let status = "OK";
-        if (!quantity) status = "NO_QTY";
-        return { itemNumber, description, batchNo, ean, sscc, quantity, labelDate, labelTime, status };
+        let status   = quantity ? "OK" : "NO_QTY";
+
+        return {
+          itemNumber, description, batchNo, ean, sscc,
+          quantity, labelDate, labelTime, status
+        };
       }
 
+
+      /* ---------------------------------------------------------
+       * CAPTURE, OCR, UPLOAD
+       * --------------------------------------------------------- */
       async function captureAndUpload() {
+        if (!cameraReady || video.videoWidth === 0 || video.videoHeight === 0) {
+          setStatus("Camera not ready yet. Please wait.");
+          return;
+        }
+
         captureBtn.disabled = true;
         setStatus("Capturing...");
 
-        canvas.width = video.videoWidth;
+        canvas.width  = video.videoWidth;
         canvas.height = video.videoHeight;
         ctx.drawImage(video, 0, 0);
 
         try {
+          /* ------------------------------
+           * PREPROCESS FOR BETTER OCR
+           * ------------------------------ */
           const tmp = document.createElement("canvas");
           const tctx = tmp.getContext("2d");
           tmp.width = canvas.width * 2;
           tmp.height = canvas.height * 2;
+
           tctx.filter = "grayscale(100%) contrast(150%) brightness(130%)";
           tctx.drawImage(canvas, 0, 0, tmp.width, tmp.height);
 
           const dataURL = tmp.toDataURL("image/jpeg");
-          const base64 = dataURL.split(",")[1];
+          const base64  = dataURL.split(",")[1];
 
           setStatus("Running OCR...");
 
@@ -123,6 +183,9 @@
 
           const fields = parseFields(rawText);
 
+          /* ------------------------------
+           * SEND TO BACKEND
+           * ------------------------------ */
           setStatus("Uploading...");
 
           const response = await fetch(BACKEND_URL, {
@@ -137,10 +200,15 @@
           });
 
           const json = await response.json();
-          if (json.ok) setStatus("Uploaded ✔");
-          else setStatus("Server error: " + json.error);
+
+          if (json.ok) {
+            setStatus("Uploaded ✔");
+          } else {
+            setStatus("Server error: " + json.error);
+          }
 
         } catch (err) {
+          console.error(err);
           setStatus("Error: " + err.message);
         }
 
@@ -149,6 +217,6 @@
 
       captureBtn.onclick = captureAndUpload;
     </script>
+
   </body>
 </html>
-
