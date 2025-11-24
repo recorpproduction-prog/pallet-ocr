@@ -5,6 +5,7 @@
     <title>Pallet OCR Capture</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
 
+    <!-- Tesseract.js -->
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 
     <style>
@@ -55,6 +56,7 @@
   </head>
 
   <body>
+
     <h2>Pallet OCR Capture (Portrait Mode)</h2>
 
     <video id="video" autoplay playsinline></video>
@@ -66,18 +68,26 @@
     <textarea id="rawTextBox" readonly></textarea>
 
     <script>
-      const BACKEND_URL = "https://script.google.com/macros/s/AKfycbywBLIimKx34qj41DVlUguaN3eayCXutXEiCMR6ApUdvPBJcAYMGi2ceRjwmLc4iEdj/exec";
+      const BACKEND_URL = "YOUR_BACKEND_URL_HERE";
 
       const video = document.getElementById("video");
       const canvas = document.getElementById("canvas");
       const ctx = canvas.getContext("2d");
       const rawBox = document.getElementById("rawTextBox");
       const statusEl = document.getElementById("status");
+
       let cameraReady = false;
 
-      function setStatus(msg){ statusEl.textContent = msg; }
 
-      // start camera
+      /************************************************************
+       * TRIPLE CAMERA-READY FIX
+       ************************************************************/
+
+      function setStatus(msg) {
+        statusEl.textContent = msg;
+      }
+
+      // FIX 1: Request camera with portrait constraints
       navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: "environment",
@@ -85,17 +95,43 @@
           width: { ideal: 720 },
           height: { ideal: 1280 }
         }
-      }).then(stream=>{
+      })
+      .then(stream => {
         video.srcObject = stream;
-        video.addEventListener("loadedmetadata", ()=>{
-          cameraReady = true;
-          setStatus("Camera ready.");
-        });
-      }).catch(err=> setStatus("Camera error: " + err.message));
 
-      function parseFields(t){
-        t = t.replace(/\r/g,"").replace(/[ \t]+\n/g,"\n");
-        const p = r=> (t.match(r)||["",""])[1].trim();
+        // FIX 2: Metadata event
+        video.addEventListener("loadedmetadata", () => {
+          console.log("loadedmetadata fired");
+          
+          // FIX 3: Delay to ensure stable width/height
+          setTimeout(() => {
+            if (video.videoWidth > 0 && video.videoHeight > 0) {
+              cameraReady = true;
+              setStatus("Camera ready.");
+            }
+          }, 250);
+        });
+
+        // FIX 4: Some phones only fire 'playing'
+        video.addEventListener("playing", () => {
+          console.log("playing fired");
+          if (video.videoWidth > 0 && video.videoHeight > 0) {
+            cameraReady = true;
+            setStatus("Camera ready.");
+          }
+        });
+
+      })
+      .catch(err => setStatus("Camera error: " + err.message));
+
+
+
+      /************************************************************
+       * PARSE OCR TEXT
+       ************************************************************/
+      function parseFields(t) {
+        t = t.replace(/\r/g, "").replace(/[ \t]+\n/g, "\n");
+        const p = r => (t.match(r) || ["", ""])[1].trim();
 
         return {
           itemNumber:  p(/Item\s*Number[:\s]*([^\n]+)/i),
@@ -110,50 +146,66 @@
         };
       }
 
+
+
+      /************************************************************
+       * CAPTURE + OCR + UPLOAD
+       ************************************************************/
       async function capture() {
-        if (!cameraReady) return setStatus("Camera not ready yet.");
-        if (video.videoWidth === 0) return setStatus("Camera still loading...");
+
+        // HARD CHECK: video must be live
+        if (!cameraReady || video.videoWidth === 0 || video.videoHeight === 0) {
+          setStatus("Camera loading… Hold phone still 1–2s.");
+          return;
+        }
 
         setStatus("Capturing...");
+
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
-        ctx.drawImage(video,0,0);
 
+        ctx.drawImage(video, 0, 0);
+
+        // Preprocess for better OCR
         const tmp = document.createElement("canvas");
         const tctx = tmp.getContext("2d");
-        tmp.width = canvas.width*2;
-        tmp.height = canvas.height*2;
+        tmp.width = canvas.width * 2;
+        tmp.height = canvas.height * 2;
+
         tctx.filter = "grayscale(100%) contrast(150%) brightness(130%)";
-        tctx.drawImage(canvas,0,0,tmp.width,tmp.height);
+        tctx.drawImage(canvas, 0, 0, tmp.width, tmp.height);
 
         const dataURL = tmp.toDataURL("image/jpeg");
         const base64 = dataURL.split(",")[1];
 
         setStatus("OCR scanning...");
-        const result = await Tesseract.recognize(dataURL,"eng");
+        const result = await Tesseract.recognize(dataURL, "eng");
         const rawText = result.data.text || "";
         rawBox.value = rawText;
 
         const fields = parseFields(rawText);
 
         setStatus("Uploading...");
-        const r = await fetch(BACKEND_URL,{
-          method:"POST",
-          headers:{ "Content-Type":"application/json" },
-          body:JSON.stringify({
+
+        const r = await fetch(BACKEND_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
             imageBase64: base64,
-            mimeType:"image/jpeg",
+            mimeType: "image/jpeg",
             rawText,
             fields
           })
         });
 
         const j = await r.json();
+
         if (j.ok) setStatus("Uploaded ✔");
         else setStatus("Server error: " + j.error);
       }
 
       document.getElementById("captureBtn").onclick = capture;
+
     </script>
 
   </body>
