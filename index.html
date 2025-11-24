@@ -5,12 +5,10 @@
     <title>Pallet OCR Capture</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
 
-    <!-- Tesseract.js OCR -->
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 
     <style>
       * { box-sizing: border-box; }
-
       body {
         background: #0e0e0e;
         color: #ffffff;
@@ -19,21 +17,18 @@
         margin: 0;
         padding: 20px;
       }
-
       h2 { margin-bottom: 15px; }
 
       video {
         width: 100%;
-        max-width: 420px;      /* Slightly narrower for portrait */
-        aspect-ratio: 9 / 16;  /* Force tall video shape */
-        object-fit: cover;     /* Fill the portrait shape */
+        max-width: 420px;
+        aspect-ratio: 9 / 16;
+        object-fit: cover;
         border-radius: 12px;
         background: #000;
       }
 
-      canvas {
-        display: none;
-      }
+      canvas { display: none; }
 
       button {
         background: #28a745;
@@ -46,13 +41,7 @@
         cursor: pointer;
       }
 
-      button:disabled { opacity: 0.5; cursor: not-allowed; }
-
-      #status {
-        margin-top: 15px;
-        min-height: 24px;
-        font-size: 16px;
-      }
+      #status { margin-top: 15px; min-height: 22px; font-size: 16px; }
 
       #rawTextBox {
         margin-top: 15px;
@@ -61,7 +50,6 @@
         height: 140px;
         font-size: 12px;
         font-family: monospace;
-        white-space: pre-wrap;
       }
     </style>
   </head>
@@ -75,147 +63,97 @@
     <button id="captureBtn">Capture, OCR & Upload</button>
 
     <div id="status"></div>
-    <textarea id="rawTextBox" readonly placeholder="OCR text will appear here..."></textarea>
+    <textarea id="rawTextBox" readonly></textarea>
 
     <script>
-      const BACKEND_URL = "YOUR_WEB_APP_URL_HERE";
+      const BACKEND_URL = "https://script.google.com/macros/s/AKfycbydVYPK62YCHntzRNCxsoPB6oq2TuQ3xFik6IZBihKe7MhqlSak6MetrYikvv-utNcd/exec";
 
       const video = document.getElementById("video");
       const canvas = document.getElementById("canvas");
       const ctx = canvas.getContext("2d");
-      const captureBtn = document.getElementById("captureBtn");
       const rawBox = document.getElementById("rawTextBox");
       const statusEl = document.getElementById("status");
-
       let cameraReady = false;
 
-      function setStatus(msg) {
-        statusEl.textContent = msg;
-      }
+      function setStatus(msg){ statusEl.textContent = msg; }
 
-      /* ---------------------------------------------------------
-       * START CAMERA — portrait mode forced
-       * --------------------------------------------------------- */
+      // start camera
       navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: "environment",
-          aspectRatio: 9 / 16,
-          width:  { ideal: 720 },
+          aspectRatio: 9/16,
+          width: { ideal: 720 },
           height: { ideal: 1280 }
-        },
-        audio: false
-      })
-      .then(stream => {
+        }
+      }).then(stream=>{
         video.srcObject = stream;
-        video.addEventListener("loadedmetadata", () => {
+        video.addEventListener("loadedmetadata", ()=>{
           cameraReady = true;
           setStatus("Camera ready.");
         });
-      })
-      .catch(err => setStatus("Camera error: " + err.message));
+      }).catch(err=> setStatus("Camera error: " + err.message));
 
-
-      /* ---------------------------------------------------------
-       * OCR FIELD PARSER
-       * --------------------------------------------------------- */
-      function parseFields(raw) {
-        const t = raw.replace(/\r/g, "").replace(/[ \t]+\n/g, "\n");
-
-        const pick = (regex) => {
-          const m = t.match(regex);
-          return m ? m[1].trim() : "";
-        };
-
-        const itemNumber  = pick(/Item\s*Number[:\s]*([^\n]+)/i);
-        const description = pick(/Item\s*Description[:\s]*([\s\S]*?)\n(?:Batch|Date|EAN|SSCC|Quantity)/i);
-        const batchNo     = pick(/Batch.*?[:\-]?\s*([A-Za-z0-9\-]+)/i);
-        const ean         = (pick(/EAN.*?Number[:\s]*([^\n]+)/i)||"").replace(/[^0-9]/g,"");
-        const sscc        = (pick(/SSCC[:\s]*([^\n]+)/i)||"").replace(/[^0-9]/g,"");
-        const labelDate   = pick(/Date[:\s]*([0-9\/\-]+)/i);
-        const labelTime   = pick(/Time[:\s]*([0-9:]+)/i);
-
-        let quantity = pick(/Quantity.*?([\d]+)/i);
-        let status   = quantity ? "OK" : "NO_QTY";
+      function parseFields(t){
+        t = t.replace(/\r/g,"").replace(/[ \t]+\n/g,"\n");
+        const p = r=> (t.match(r)||["",""])[1].trim();
 
         return {
-          itemNumber, description, batchNo, ean, sscc,
-          quantity, labelDate, labelTime, status
+          itemNumber:  p(/Item\s*Number[:\s]*([^\n]+)/i),
+          description: p(/Item\s*Description[:\s]*([\s\S]*?)\n(?:Batch|Date|EAN|SSCC|Quantity)/i),
+          batchNo:     p(/Batch.*?[:\-]?\s*([A-Za-z0-9\-]+)/i),
+          ean:         p(/EAN.*?Number[:\s]*([^\n]+)/i).replace(/[^0-9]/g,""),
+          sscc:        p(/SSCC[:\s]*([^\n]+)/i).replace(/[^0-9]/g,""),
+          quantity:    p(/Quantity.*?(\d+)/i),
+          labelDate:   p(/Date[:\s]*([0-9\/\-]+)/i),
+          labelTime:   p(/Time[:\s]*([0-9:]+)/i),
+          status:      "OK"
         };
       }
 
+      async function capture() {
+        if (!cameraReady) return setStatus("Camera not ready yet.");
+        if (video.videoWidth === 0) return setStatus("Camera still loading...");
 
-      /* ---------------------------------------------------------
-       * CAPTURE, OCR, UPLOAD
-       * --------------------------------------------------------- */
-      async function captureAndUpload() {
-        if (!cameraReady || video.videoWidth === 0 || video.videoHeight === 0) {
-          setStatus("Camera not ready yet. Please wait.");
-          return;
-        }
-
-        captureBtn.disabled = true;
         setStatus("Capturing...");
-
-        canvas.width  = video.videoWidth;
+        canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
-        ctx.drawImage(video, 0, 0);
+        ctx.drawImage(video,0,0);
 
-        try {
-          /* ------------------------------
-           * PREPROCESS FOR BETTER OCR
-           * ------------------------------ */
-          const tmp = document.createElement("canvas");
-          const tctx = tmp.getContext("2d");
-          tmp.width = canvas.width * 2;
-          tmp.height = canvas.height * 2;
+        const tmp = document.createElement("canvas");
+        const tctx = tmp.getContext("2d");
+        tmp.width = canvas.width*2;
+        tmp.height = canvas.height*2;
+        tctx.filter = "grayscale(100%) contrast(150%) brightness(130%)";
+        tctx.drawImage(canvas,0,0,tmp.width,tmp.height);
 
-          tctx.filter = "grayscale(100%) contrast(150%) brightness(130%)";
-          tctx.drawImage(canvas, 0, 0, tmp.width, tmp.height);
+        const dataURL = tmp.toDataURL("image/jpeg");
+        const base64 = dataURL.split(",")[1];
 
-          const dataURL = tmp.toDataURL("image/jpeg");
-          const base64  = dataURL.split(",")[1];
+        setStatus("OCR scanning...");
+        const result = await Tesseract.recognize(dataURL,"eng");
+        const rawText = result.data.text || "";
+        rawBox.value = rawText;
 
-          setStatus("Running OCR...");
+        const fields = parseFields(rawText);
 
-          const result = await Tesseract.recognize(dataURL, "eng");
-          const rawText = result.data.text || "";
-          rawBox.value = rawText;
+        setStatus("Uploading...");
+        const r = await fetch(BACKEND_URL,{
+          method:"POST",
+          headers:{ "Content-Type":"application/json" },
+          body:JSON.stringify({
+            imageBase64: base64,
+            mimeType:"image/jpeg",
+            rawText,
+            fields
+          })
+        });
 
-          const fields = parseFields(rawText);
-
-          /* ------------------------------
-           * SEND TO BACKEND
-           * ------------------------------ */
-          setStatus("Uploading...");
-
-          const response = await fetch(BACKEND_URL, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              imageBase64: base64,
-              mimeType: "image/jpeg",
-              rawText,
-              fields
-            })
-          });
-
-          const json = await response.json();
-
-          if (json.ok) {
-            setStatus("Uploaded ✔");
-          } else {
-            setStatus("Server error: " + json.error);
-          }
-
-        } catch (err) {
-          console.error(err);
-          setStatus("Error: " + err.message);
-        }
-
-        captureBtn.disabled = false;
+        const j = await r.json();
+        if (j.ok) setStatus("Uploaded ✔");
+        else setStatus("Server error: " + j.error);
       }
 
-      captureBtn.onclick = captureAndUpload;
+      document.getElementById("captureBtn").onclick = capture;
     </script>
 
   </body>
